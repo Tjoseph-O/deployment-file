@@ -1,19 +1,26 @@
+#!/bin/bash
 
+#################################################
+# Automated Deployment Script
+# DevOps Intern Stage 1 Task
+# Author: DevOps Team
+# Description: Production-grade deployment automation
+#################################################
 
 set -euo pipefail
 
-
+# Color codes for output
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly YELLOW='\033[1;33m'
 readonly BLUE='\033[0;34m'
-readonly NC='\033[0m' 
+readonly NC='\033[0m' # No Color
 
-
+# Log file setup
 readonly LOG_FILE="deploy_$(date +%Y%m%d_%H%M%S).log"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-
+# Exit codes
 readonly EXIT_SUCCESS=0
 readonly EXIT_INVALID_INPUT=1
 readonly EXIT_CLONE_FAILED=2
@@ -22,7 +29,7 @@ readonly EXIT_DOCKER_FAILED=4
 readonly EXIT_NGINX_FAILED=5
 readonly EXIT_VALIDATION_FAILED=6
 
-
+# Global variables
 GIT_REPO_URL=""
 PAT=""
 BRANCH="main"
@@ -33,7 +40,9 @@ APP_PORT=""
 PROJECT_NAME=""
 CLEANUP_MODE=false
 
-
+#################################################
+# Utility Functions
+#################################################
 
 log() {
     local level="$1"
@@ -64,7 +73,7 @@ error_exit() {
     exit "${2:-1}"
 }
 
-
+# Trap function for unexpected errors
 cleanup_on_error() {
     log_error "Script interrupted or failed at line $1"
     log_info "Check log file: $LOG_FILE"
@@ -73,7 +82,9 @@ cleanup_on_error() {
 
 trap 'cleanup_on_error $LINENO' ERR INT TERM
 
-
+#################################################
+# Input Validation Functions
+#################################################
 
 validate_url() {
     local url="$1"
@@ -99,12 +110,14 @@ validate_port() {
     return 1
 }
 
-
+#################################################
+# Step 1: Collect Parameters from User
+#################################################
 
 collect_user_input() {
     log_info "=== Step 1: Collecting User Input ==="
     
-    
+    # Git Repository URL
     while true; do
         read -rp "Enter Git Repository URL: " GIT_REPO_URL
         if validate_url "$GIT_REPO_URL"; then
@@ -114,24 +127,24 @@ collect_user_input() {
         fi
     done
     
-    
+    # Personal Access Token
     read -rsp "Enter Personal Access Token (PAT): " PAT
     echo
     if [ -z "$PAT" ]; then
         error_exit "PAT cannot be empty" $EXIT_INVALID_INPUT
     fi
     
-    
+    # Branch name
     read -rp "Enter branch name (default: main): " BRANCH
     BRANCH="${BRANCH:-main}"
     
-   
+    # SSH Username
     read -rp "Enter SSH username: " SSH_USER
     if [ -z "$SSH_USER" ]; then
         error_exit "SSH username cannot be empty" $EXIT_INVALID_INPUT
     fi
     
-    
+    # Server IP
     while true; do
         read -rp "Enter server IP address: " SERVER_IP
         if validate_ip "$SERVER_IP"; then
@@ -141,7 +154,7 @@ collect_user_input() {
         fi
     done
     
-   
+    # SSH Key Path
     while true; do
         read -rp "Enter SSH key path: " SSH_KEY_PATH
         SSH_KEY_PATH="${SSH_KEY_PATH/#\~/$HOME}"
@@ -153,7 +166,7 @@ collect_user_input() {
         fi
     done
     
-    
+    # Application Port
     while true; do
         read -rp "Enter application port: " APP_PORT
         if validate_port "$APP_PORT"; then
@@ -163,19 +176,21 @@ collect_user_input() {
         fi
     done
     
-    
+    # Extract project name from repo URL
     PROJECT_NAME=$(basename "$GIT_REPO_URL" .git)
     
     log_success "Input collection completed"
     log_info "Project: $PROJECT_NAME | Branch: $BRANCH | Port: $APP_PORT"
 }
 
-
+#################################################
+# Step 2: Clone Repository
+#################################################
 
 clone_repository() {
     log_info "=== Step 2: Cloning Repository ==="
     
-    
+    # Create authenticated URL
     local auth_url
     if [[ "$GIT_REPO_URL" =~ ^https://github.com/ ]]; then
         auth_url="${GIT_REPO_URL/https:\/\//https://${PAT}@}"
@@ -202,7 +217,9 @@ clone_repository() {
     log_success "Repository cloned/updated successfully"
 }
 
-
+#################################################
+# Step 3: Verify Project Structure
+#################################################
 
 verify_project_structure() {
     log_info "=== Step 3: Verifying Project Structure ==="
@@ -220,7 +237,9 @@ verify_project_structure() {
     cd "$SCRIPT_DIR" || exit
 }
 
-
+#################################################
+# Step 4: SSH Connectivity Test
+#################################################
 
 test_ssh_connection() {
     log_info "=== Step 4: Testing SSH Connection ==="
@@ -235,7 +254,9 @@ test_ssh_connection() {
     fi
 }
 
-
+#################################################
+# Step 5: Prepare Remote Environment
+#################################################
 
 prepare_remote_environment() {
     log_info "=== Step 5: Preparing Remote Environment ==="
@@ -293,12 +314,14 @@ ENDSSH
     log_success "Remote environment prepared successfully"
 }
 
-
+#################################################
+# Step 6: Deploy Dockerized Application
+#################################################
 
 deploy_application() {
     log_info "=== Step 6: Deploying Dockerized Application ==="
     
-   
+    # Transfer project files
     log_info "Transferring project files to remote server..."
     rsync -avz --progress -e "ssh -i $SSH_KEY_PATH -o StrictHostKeyChecking=no" \
         "$PROJECT_NAME/" "$SSH_USER@$SERVER_IP:~/$PROJECT_NAME/" >> "$LOG_FILE" 2>&1 || \
@@ -306,7 +329,7 @@ deploy_application() {
     
     log_success "Files transferred successfully"
     
-    
+    # Deploy on remote server
     log_info "Building and running Docker containers..."
     
     ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
@@ -335,13 +358,24 @@ deploy_application() {
         echo "[INFO] Waiting for container to be ready..."
         sleep 10
         
-        # Validate container
-        if docker ps | grep -q "$PROJECT_NAME"; then
+        # Validate container (flexible name matching for docker-compose)
+        echo "[INFO] Checking container status..."
+        NORMALIZED_NAME=$(echo "$PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')
+        
+        if docker ps --format "{{.Names}}" | grep -qi "$NORMALIZED_NAME"; then
             echo "[SUCCESS] Container is running"
-            docker ps --filter "name=$PROJECT_NAME"
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
         else
-            echo "[ERROR] Container failed to start"
-            docker logs $(docker ps -aq --filter "name=$PROJECT_NAME" | head -1) || true
+            echo "[ERROR] Container failed to start or is not healthy"
+            echo "[INFO] Checking all containers..."
+            docker ps -a
+            
+            # Show logs from the most recent container
+            LATEST_CONTAINER=$(docker ps -aq | head -1)
+            if [ -n "$LATEST_CONTAINER" ]; then
+                echo "[INFO] Container logs:"
+                docker logs "$LATEST_CONTAINER" 2>&1 | tail -20
+            fi
             exit 1
         fi
 ENDSSH
@@ -349,7 +383,9 @@ ENDSSH
     log_success "Application deployed successfully"
 }
 
-
+#################################################
+# Step 7: Configure Nginx Reverse Proxy
+#################################################
 
 configure_nginx() {
     log_info "=== Step 7: Configuring Nginx Reverse Proxy ==="
@@ -401,12 +437,14 @@ ENDSSH
     log_success "Nginx reverse proxy configured"
 }
 
-
+#################################################
+# Step 8: Validate Deployment
+#################################################
 
 validate_deployment() {
     log_info "=== Step 8: Validating Deployment ==="
     
-    
+    # Validate on remote server
     ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "$SSH_USER@$SERVER_IP" \
         "PROJECT_NAME=$PROJECT_NAME APP_PORT=$APP_PORT" bash <<'ENDSSH' || error_exit "Deployment validation failed" $EXIT_VALIDATION_FAILED
         set -e
@@ -419,12 +457,22 @@ validate_deployment() {
             exit 1
         fi
         
-        # Check container health
-        if docker ps | grep -q "$PROJECT_NAME"; then
+        # Check container health (handle both docker and docker-compose naming)
+        CONTAINER_COUNT=$(docker ps --filter "name=$PROJECT_NAME" --format "{{.Names}}" | wc -l)
+        
+        if [ "$CONTAINER_COUNT" -gt 0 ]; then
             echo "[SUCCESS] Container is active and healthy"
+            docker ps --filter "name=$PROJECT_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
         else
-            echo "[ERROR] Container is not running"
-            exit 1
+            # Try without exact name match (docker-compose adds suffixes)
+            if docker ps | grep -i "$(echo $PROJECT_NAME | tr '[:upper:]' '[:lower:]' | sed 's/_/-/g')"; then
+                echo "[SUCCESS] Container is active and healthy"
+                docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+            else
+                echo "[ERROR] Container is not running"
+                docker ps -a
+                exit 1
+            fi
         fi
         
         # Check Nginx
@@ -458,7 +506,9 @@ ENDSSH
     log_success "Deployment validation completed"
 }
 
-
+#################################################
+# Cleanup Function
+#################################################
 
 cleanup_deployment() {
     log_info "=== Cleanup Mode: Removing Deployed Resources ==="
@@ -487,7 +537,9 @@ ENDSSH
     log_success "All resources cleaned up successfully"
 }
 
-
+#################################################
+# Main Execution
+#################################################
 
 main() {
     log_info "=========================================="
@@ -496,7 +548,7 @@ main() {
     log_info "Log file: $LOG_FILE"
     echo
     
-    
+    # Check for cleanup flag
     if [ "${1:-}" = "--cleanup" ]; then
         CLEANUP_MODE=true
         collect_user_input
@@ -506,7 +558,7 @@ main() {
         exit $EXIT_SUCCESS
     fi
     
-   
+    # Normal deployment flow
     collect_user_input
     clone_repository
     verify_project_structure
@@ -529,5 +581,5 @@ main() {
     exit $EXIT_SUCCESS
 }
 
-
+# Run main function
 main "$@"
